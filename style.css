@@ -359,3 +359,57 @@ input[type="range"] { width: 100%; accent-color: var(--accent); height: 28px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }
+
+/* Export-Umschalter mit zwei Reitern */
+.seg.two { grid-template-columns: repeat(2, 1fr); }
+
+/* Druckansicht: Karteikarten zum Ausschneiden */
+.print-deck { display: flex; flex-direction: column; gap: 12px; }
+.print-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+.print-card {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px;
+  display: flex; flex-direction: column; gap: 8px; break-inside: avoid; page-break-inside: avoid;
+}
+.print-card h3 { margin: 0; font-family: var(--font-display); font-size: 1rem; border-bottom: 1px solid var(--b1); padding-bottom: 6px; }
+.print-card .points { gap: 4px; font-size: .9rem; }
+.print-card .q { font-weight: 650; }
+.print-card .a { color: var(--muted); white-space: pre-line; border-top: 1px dashed var(--line); padding-top: 8px; }
+
+@media print {
+  :root { --bg: #fff; --surface: #fff; --ink: #000; --muted: #333; --line: #999; }
+  body { background: #fff; color: #000; }
+  .no-print, .tabbar, .toast { display: none !important; }
+  .view { max-width: none; padding: 0; gap: 10px; }
+  .print-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
+  .print-card { box-shadow: none; border: 1px solid #555; border-radius: 4px; font-size: 11pt; }
+  .print-deck + .print-deck { break-before: page; }
+}
+
+/* Mehrere Fotos / PDFs einlesen */
+.import-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.import-list li { display: flex; gap: 12px; align-items: center; background: var(--surface); border-radius: 12px; padding: 10px; border: 1px solid var(--line); }
+.import-list li.error { border-color: var(--bad); }
+.import-list img, .doc-icon { width: 52px; height: 52px; border-radius: 8px; object-fit: cover; flex: none; background: var(--surface-2); }
+.doc-icon { display: grid; place-items: center; font-size: .72rem; font-weight: 700; letter-spacing: .05em; color: var(--bad); border: 1px solid var(--line); }
+.imp-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.imp-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ok-text { color: var(--good); }
+.import-sum { background: var(--surface); border-radius: var(--radius); padding: 14px; display: flex; flex-direction: column; gap: 10px; box-shadow: var(--shadow); }
+.howto { margin: 10px 0 8px; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; font-size: .9rem; }
+.rules p { margin-top: 8px; }
+
+/* Karten auswählen */
+.card-list li.selectable { cursor: pointer; border: 2px solid transparent; }
+.card-list li.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, var(--surface)); }
+.sel-box { flex: none; width: 24px; height: 24px; border-radius: 7px; border: 2px solid var(--line); display: grid; place-items: center; font-weight: 800; font-size: .85rem; color: var(--accent-ink); background: var(--surface); }
+.selected .sel-box { background: var(--accent); border-color: var(--accent); }
+.select-bar {
+  position: sticky; bottom: calc(var(--tabbar-h) + 10px + env(safe-area-inset-bottom, 0px)); z-index: 5;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; box-shadow: var(--shadow);
+  display: flex; flex-direction: column; gap: 10px;
+}
+.sb-row { display: flex; flex-direction: column; gap: 6px; }
+.sb-row .row select { flex: 1; min-width: 0; }
+.box-pick { display: flex; gap: 8px; }
+.box-pick .badge { width: 40px; height: 40px; border: 0; font-size: 1rem; cursor: pointer; }
+.box-pick .badge:disabled { opacity: .4; cursor: not-allowed; }

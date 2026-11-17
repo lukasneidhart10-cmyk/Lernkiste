@@ -18,7 +18,7 @@ const Generator = (() => {
     'merke wichtig hinweis aufgabe seite kapitel bild abbildung tabelle').split(' '));
 
   // Erkennt Aufzählungszeichen am Zeilenanfang: -, •, *, 1., 2) ...
-  const BULLET = /^\s*(?:[-•*·▪●–]|\d+[.)])\s+/;
+  const BULLET = /^\s*(?:[-•*·▪●–+»]|\d+[.)])\s+/;  // "+" und "»": so liest die Texterkennung oft "•"
 
   // Begriffe dürfen höchstens 5 Wörter und 40 Zeichen lang sein, sonst ist es wohl kein Begriff.
   function isYear(text) {
@@ -98,15 +98,22 @@ const Generator = (() => {
     return ruleSeparator(lines, used, /^(.{2,40}?)\s+[-–—]\s+(.+)$/, 'Gedankenstrich');
   }
 
+  // Wörter, mit denen ein Satz nie aufhört (Artikel, Präpositionen, Bindewörter).
+  // Verben wie "werden" gehören NICHT dazu, weil deutsche Sätze oft mit dem Verb enden.
+  const NO_END = new Set(('der die das den dem des ein eine einer einem einen eines und oder aber sowie ' +
+    'mit von zu zum zur im in am an auf aus bei nach vor für über unter durch gegen ohne um als wie dass weil wenn ob').split(' '));
+
   // Gehört die nächste Zeile noch zum selben Satz? (Zeilenumbruch im Foto)
   // Ja, wenn die Zeile davor nicht mit einem Satzzeichen endet UND
-  // die nächste klein anfängt oder die Zeile davor mit Komma oder einem Füllwort ("in", "und", ...) endet.
+  // die nächste klein anfängt oder die Zeile davor mit Komma oder z. B. "in", "und", "der" endet.
   function continuesSentence(prev, next) {
     if (!prev || /[.!?:]$/.test(prev)) return false;
     if (/^[a-zäöüß(]/.test(next)) return true;
+    // Offenes Anführungszeichen ("„ankommendes" ... "Geschenk“") -> Satz geht weiter
+    if ((prev.match(/[„"]/g) || []).length > (prev.match(/[“”]/g) || []).length) return true;
     if (/,$/.test(prev)) return true;
     const last = prev.split(/\s+/).pop().toLowerCase();
-    return STOPWORDS.has(last);
+    return NO_END.has(last);
   }
 
   // Übrige Zeilen zu Sätzen zusammensetzen. Eine Zeile wird mit der nächsten verbunden,
@@ -134,10 +141,11 @@ const Generator = (() => {
   }
 
   // Abkürzungen wie "z. B." oder "bzw." dürfen einen Satz nicht beenden.
-  const ABBREV = /\b(z\. ?B|d\. ?h|u\. ?a|s\. ?o|s\. ?u|o\. ?Ä|u\. ?Ä|bzw|ca|usw|etc|Nr|Abb|vgl|evtl|ggf|sog|bspw|inkl|Jh|Mio|Mrd|Std|min|max)\./g;
+  const ABBREV = /\b(n\. ?Chr|v\. ?Chr|z\. ?B|d\. ?h|u\. ?a|s\. ?o|s\. ?u|o\. ?Ä|u\. ?Ä|bzw|ca|usw|etc|Nr|Abb|vgl|evtl|ggf|sog|bspw|inkl|Jh|Mio|Mrd|Std|min|max)\./g;
 
-  // "11. November", "20. Jahrhundert", "1. Weltkrieg" sind keine Satzenden.
-  const ORDINAL = /\b(\d{1,2})\.(?=\s+(?:Januar|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember|Jahrhundert|Jh|Weltkrieg|Klasse|Mal|Platz|Kapitel)\b)/g;
+  // "11. November", "50. Bundesstaat", "1. Weltkrieg": ein- oder zweistellige Zahl mit Punkt = Ordnungszahl, kein Satzende.
+  // (Jahreszahlen wie "1914." dürfen einen Satz beenden.)
+  const ORDINAL = /\b(\d{1,2})\.(?=\s+[A-ZÄÖÜ])/g;
 
   // Teilt einen Textabschnitt in Sätze. Ein Satz endet bei . ! oder ?, wenn danach ein
   // Leerzeichen und ein Großbuchstabe oder eine Zahl kommt (so bleibt "3.5" ganz).
@@ -209,6 +217,8 @@ const Generator = (() => {
     const o = { lists: true, definitions: true, cloze: true, ...opts };
     const lines = prepare(text);
     const used = new Set();
+    // Kopf- und Fußzeilen ("… Seite 2") werden nie zu Karten.
+    lines.forEach((l, i) => { if (l && isPageFooter(l)) used.add(i); });
     const cards = [];
     if (o.lists) cards.push(...ruleList(lines, used));
     if (o.definitions) cards.push(...ruleColon(lines, used), ...ruleEquals(lines, used), ...ruleDash(lines, used));
@@ -249,19 +259,51 @@ const Generator = (() => {
     return s.replace(FILLERS, '').replace(/\s{2,}/g, ' ').trim();
   }
 
-  // Ist diese Zeile eine Überschrift? Kurz, ohne Satzzeichen am Ende, steht für sich allein.
-  function isHeading(line, prev, next) {
+  const words = (l) => l.trim().split(/\s+/).length;
+
+  // Kurze Zeile ohne Satzzeichen und ohne Trennzeichen: könnte eine Überschrift sein.
+  function isShortLine(l) {
+    return !!l && !BULLET.test(l) && !/[.!?:;,=]$/.test(l) && !/\s[-–—=]\s|:/.test(l)
+      && /^[A-ZÄÖÜ0-9]/.test(l) && words(l) <= 6;
+  }
+
+  // Normaler Text: Aufzählungspunkt, längerer Satz oder Zeile mit Satzzeichen am Ende.
+  function isBodyLine(l) {
+    return !!l && (BULLET.test(l) || words(l) >= 6 || /[.!?:]$/.test(l));
+  }
+
+  // Ist Zeile i eine Überschrift? Sie ist kurz und danach kommt normaler Text
+  // (oder eine Unterüberschrift und dann Text). So werden Tabellenzeilen wie "Aloha Wertschätzung",
+  // auf die weitere kurze Zeilen folgen, NICHT für Überschriften gehalten.
+  function isHeading(lines, i) {
+    const line = lines[i];
     if (/^#{1,6}\s+\S/.test(line)) return true;
-    if (BULLET.test(line) || !next) return false;
-    if (/[.!?:;,=]$/.test(line) || /\s[-–—=]\s|:/.test(line)) return false;
-    if (!/^[A-ZÄÖÜ0-9]/.test(line) || line.split(/\s+/).length > 6) return false;
-    if (/^[a-zäöüß]/.test(next)) return false;
-    return !prev;
+    if (!isShortLine(line)) return false;
+    const after = (k) => { let n = k + 1; while (n < lines.length && !lines[n]) n++; return n; };
+    const n1 = after(i);
+    const next = lines[n1] || '';
+    const next2 = lines[after(n1)] || '';
+    if (!next || /^[a-zäöüß]/.test(next)) return false;
+    // Steht direkt davor eine kurze Zeile (z. B. letzte Tabellenzeile), nur einzelne Wörter als Überschrift zählen.
+    const prev = lines[i - 1] || '';
+    if (prev && isShortLine(prev) && words(line) > 1 && !isHeadingCandidateAbove(lines, i - 1)) return false;
+    return isBodyLine(next) || (isShortLine(next) && isBodyLine(next2));
+  }
+
+  // War die Zeile darüber selbst eine Überschrift (Überschrift + Unterüberschrift)?
+  function isHeadingCandidateAbove(lines, k) {
+    const before = lines[k - 1] || '';
+    return isShortLine(lines[k]) && (!before || /[.!?:]$/.test(before) || isBodyLine(before));
+  }
+
+  // Kopf- oder Fußzeile wie "Musik: Lernzettel zur Klassenarbeit Seite 3"
+  function isPageFooter(p) {
+    return /^(S\.|Seite)\s*\d+$/i.test(p.trim()) || (/\bSeite\s+\d+\s*$/.test(p) && words(p) <= 8);
   }
 
   // Sieht ein Stichpunkt nach echtem Inhalt aus? (Seitenzahlen o. Ä. werden nicht übernommen.)
   function isContent(p) {
-    return (p.match(/[A-Za-zÄÖÜäöüß]/g) || []).length >= 3 && !/^(S\.|Seite)\s*\d+$/i.test(p);
+    return (p.match(/[A-Za-zÄÖÜäöüß]/g) || []).length >= 3 && !isPageFooter(p);
   }
 
   // opts: { perCard: 6, short: true, fallbackTitle: 'Zusammenfassung' }
@@ -287,18 +329,42 @@ const Generator = (() => {
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       if (!line) { flush(); continue; }
-      const prev = lines[i - 1] || '';
       let n = i + 1;
       while (n < lines.length && !lines[n]) n++;
       const next = lines[n] || '';
+      const textLine = line.replace(BULLET, '');
+
+      // Fußzeile ("… Seite 3"): nicht übernehmen, und eine neue Seite beginnt (Haupttitel zurücksetzen).
+      if (isPageFooter(line)) {
+        flush();
+        skipped.push(line);
+        parent = null;
+        continue;
+      }
+
+      // Zeilenumbruch mitten im Satz: an den vorherigen Text anhängen.
+      if (continuesSentence(buffer, textLine) && !BULLET.test(line)) {
+        buffer += ' ' + textLine;
+        continue;
+      }
 
       // Überschrift: neue Karte(n) beginnen
-      if (!buffer && isHeading(line, prev, next)) {
+      if (isHeading(lines, i)) {
+        flush();
         const title = line.replace(/^#+\s*/, '');
-        // Überschrift direkt nach Überschrift: die erste ist der Haupttitel ("Der Erste Weltkrieg – Ursachen").
-        if (section.title && !section.points.length) parent = section.title;
-        else if (section.points.length) sections.push(section);
-        section = { title: parent && parent !== title ? `${parent} – ${title}` : title, points: [] };
+        // Überschrift direkt nach Überschrift: beide zusammen bilden den Titel ("Notenlesen – Violinschlüssel").
+        // Ist die erste Überschrift der Anfang des ganzen Textes, gilt sie als Haupttitel für alle Karten
+        // dieser Seite ("Der Erste Weltkrieg – Ursachen", "Der Erste Weltkrieg – Verlauf").
+        let combined = title;
+        if (section.title && !section.points.length) {
+          combined = `${section.title} – ${title}`;
+          if (section.isFirst) parent = section.title;
+        } else {
+          if (section.points.length) sections.push(section);
+          if (parent && parent !== title) combined = `${parent} – ${title}`;
+        }
+        const isFirst = !sections.length && !section.points.length && !section.title;
+        section = { title: combined, points: [], isFirst };
         continue;
       }
 
@@ -319,17 +385,25 @@ const Generator = (() => {
         continue;
       }
 
-      const textLine = line.replace(BULLET, '');
-      const continues = continuesSentence(buffer, textLine) && !BULLET.test(line);
-      if (continues) {
-        buffer += ' ' + textLine;
-      } else {
-        flush();
-        buffer = textLine;
-      }
+      flush();
+      buffer = textLine;
     }
     flush();
     if (section.points.length) sections.push(section);
+
+    // Mini-Abschnitte mit nur einem Stichpunkt ("Rhythmus" + ein Satz) werden an den vorherigen
+    // Abschnitt angehängt ("Rhythmus: …"), statt eine eigene, fast leere Karte zu bekommen.
+    for (let k = 1; k < sections.length; ) {
+      const sec = sections[k];
+      const before = sections[k - 1];
+      if (sec.points.length === 1 && sec.title && before.points.length < o.perCard) {
+        const p = sec.points[0];
+        before.points.push(p.toLowerCase().startsWith(sec.title.toLowerCase()) ? p : `${sec.title}: ${p}`);
+        sections.splice(k, 1);
+      } else {
+        k++;
+      }
+    }
 
     // Stichpunkte gleichmäßig verteilen: 9 Punkte bei max. 6 -> 5 + 4 statt 6 + 3.
     const cards = [];

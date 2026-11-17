@@ -1,11 +1,11 @@
 // sw.js – Service Worker: speichert alle Dateien der App im Browser-Cache.
 // Dadurch startet die App auch ohne Internet. Bei Änderungen VERSION erhöhen.
-const VERSION = 'lernkiste-v1';
+const VERSION = 'lernkiste-v3';
 const FILES = [
   './', 'index.html', 'manifest.json', 'style.css',
-  'storage.js', 'srs.js', 'generator.js', 'ocr.js', 'quiz.js', 'app.js',
+  'storage.js', 'srs.js', 'generator.js', 'ocr.js', 'pdfreader.js', 'quiz.js', 'app.js',
   'icon.svg', 'icon-192.png', 'icon-512.png',
-  'tesseract.min.js', 'worker.min.js',
+  'tesseract.min.js', 'worker.min.js', 'pdf.min.js',
 ];
 
 self.addEventListener('install', (e) => {

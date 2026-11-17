@@ -20,7 +20,7 @@
   state.history = state.history || {};
   state.settings = { ...DEFAULT_SETTINGS, ...(state.settings || {}) };
   migrateExample();
-  const ui = { view: 'home', deckId: null, cardId: null, createTab: 'photo', draftText: '', aiAnswer: '', preview: [], previewTarget: '', previewSource: 'rules', coverage: null, settingsOpen: false, ocr: null, session: null, quiz: null, exportText: '' };
+  const ui = { view: 'home', deckId: null, cardId: null, createTab: 'photo', draftText: '', aiAnswer: '', preview: [], previewTarget: '', previewSource: 'rules', coverage: null, settingsOpen: false, ocr: null, session: null, quiz: null, exportIds: null, exportFormat: 'text', exportOpen: false, imports: [], importBusy: false, importStatus: '', selecting: false, selected: new Set(), moveTarget: '', moveNewName: '' };
 
   const COLORS = ['blue', 'green', 'orange', 'pink', 'purple', 'teal'];
   const root = document.getElementById('app');
@@ -217,6 +217,34 @@
       .map(b => counts[b] ? `<span class="b${b}" style="flex:${counts[b] / total}" title="Fach ${b}: ${counts[b]}"></span>` : '').join('')}</div>`;
   }
 
+  // ---------- Export ----------
+  function exportDecksList() {
+    return ui.exportIds ? ui.exportIds.map(deckById).filter(Boolean) : state.decks;
+  }
+
+  // Lesbare Textfassung: erst alle Stichwortkarten, dann alle Lernkarten.
+  function readableText(decks) {
+    return decks.map(d => {
+      const summary = d.cards.filter(c => c.type === 'summary');
+      const learn = d.cards.filter(c => c.type !== 'summary');
+      const title = `${d.name}${d.subject ? ' (' + d.subject + ')' : ''}`;
+      let out = `${title}\n${'='.repeat(Math.min(title.length, 40))}\n`;
+      if (summary.length) {
+        out += `\nSTICHWORTKARTEN\n\n` + summary.map(c => `${c.front}\n${pointsOf(c).map(p => '  • ' + p).join('\n')}`).join('\n\n') + '\n';
+      }
+      if (learn.length) {
+        out += `\nLERNKARTEN\n\n` + learn.map((c, i) => `${i + 1}. ${c.front}\n   → ${c.back.replace(/\n/g, '\n     ')}`).join('\n\n') + '\n';
+      }
+      if (!d.cards.length) out += '\n(keine Karten)\n';
+      return out;
+    }).join('\n\n');
+  }
+
+  function exportContent() {
+    const decks = exportDecksList();
+    return ui.exportFormat === 'text' ? readableText(decks) : Storage.exportDecks(decks);
+  }
+
   // ---------- Ansichten ----------
   const views = {
     home() {
@@ -272,19 +300,27 @@
           ${[1, 2, 3, 4, 5].map(b => `<div class="box b${b}"><span class="tnum">${counts[b]}</span><small>Fach ${b}</small></div>`).join('')}
         </section>
         <div class="sec-head"><h2>${plural(d.cards.length, 'Karte', 'Karten')}</h2>
-          <div class="row"><button class="btn small" data-act="go" data-view="create" data-target="${d.id}">Aus Foto/Text</button><button class="btn small" data-act="newCard">+ Karte</button></div>
+          ${ui.selecting
+            ? `<div class="row"><button class="btn small" data-act="selectAll">${ui.selected.size === d.cards.length ? 'Keine' : 'Alle'} auswählen</button><button class="btn small primary" data-act="endSelect">Fertig</button></div>`
+            : `<div class="row wrap"><button class="btn small" data-act="go" data-view="create" data-target="${d.id}">Aus Foto/Text</button><button class="btn small" data-act="newCard">+ Karte</button>${d.cards.length ? '<button class="btn small" data-act="startSelect">Auswählen</button>' : ''}</div>`}
         </div>
+        ${ui.selecting ? '<p class="muted small">Tippe Karten an, um sie auszuwählen. Dann kannst du sie verschieben, in ein anderes Lernfach legen oder löschen.</p>' : ''}
         <ul class="card-list">
-          ${d.cards.map(c => `
-            <li>
+          ${d.cards.map(c => {
+            const sel = ui.selected.has(c.id);
+            return `
+            <li class="${ui.selecting ? 'selectable' : ''} ${sel ? 'selected' : ''}" ${ui.selecting ? `data-act="toggleSelect" data-id="${c.id}" role="checkbox" aria-checked="${sel}" tabindex="0"` : ''}>
+              ${ui.selecting ? `<span class="sel-box" aria-hidden="true">${sel ? '✓' : ''}</span>` : ''}
               <span class="badge b${c.box}" title="Fach ${c.box}">${c.box}</span>
               <div class="cl-text">${c.type === 'summary' ? '<span class="chip">Stichwortkarte</span>' : ''}<p class="cl-front">${cardFrontHtml(c)}</p><p class="cl-back muted">${esc(c.back)}</p></div>
-              <div class="cl-btns">
+              ${ui.selecting ? '' : `<div class="cl-btns">
                 <button class="icon-btn" data-act="editCard" data-id="${c.id}" aria-label="Bearbeiten">✎</button>
                 <button class="icon-btn" data-act="deleteCard" data-id="${c.id}" aria-label="Löschen">✕</button>
-              </div>
-            </li>`).join('') || '<li class="muted">Noch keine Karten in diesem Stapel.</li>'}
+              </div>`}
+            </li>`;
+          }).join('') || '<li class="muted">Noch keine Karten in diesem Stapel.</li>'}
         </ul>
+        ${ui.selecting ? selectBar(d) : ''}
         <div class="row wrap foot-actions">
           <button class="btn ghost small" data-act="editDeck">Stapel bearbeiten</button>
           <button class="btn ghost small" data-act="exportDeck">Exportieren</button>
@@ -332,23 +368,47 @@
 
     create() {
       const tab = ui.createTab;
-      const tabs = [['photo', 'Foto'], ['text', 'Text'], ['ai', 'KI-Chat']];
+      const tabs = [['photo', 'Foto & PDF'], ['text', 'Text'], ['ai', 'KI-Chat']];
       let body = '';
       if (tab === 'photo') {
-        const o = ui.ocr;
+        const done = ui.imports.filter(i => i.status === 'done');
         body = `
-          <p>Fotografiere einen Hefteintrag, ein Arbeitsblatt oder eine Buchseite. Der Text wird direkt auf deinem Gerät gelesen.</p>
+          <p>Fotografiere Hefteinträge, Arbeitsblätter oder Buchseiten. Du kannst <strong>mehrere Fotos nacheinander</strong> aufnehmen oder <strong>mehrere Bilder und PDFs auf einmal</strong> auswählen. Der Text wird direkt auf deinem Gerät gelesen.</p>
           <div class="row wrap">
-            <label class="btn primary file-btn">Foto aufnehmen<input type="file" accept="image/*" capture="environment" data-ocr></label>
-            <label class="btn file-btn">Bild auswählen<input type="file" accept="image/*" data-ocr></label>
+            <label class="btn primary file-btn">${ui.imports.length ? 'Noch ein Foto' : 'Foto aufnehmen'}<input type="file" accept="image/*" capture="environment" data-import-files ${ui.importBusy ? 'disabled' : ''}></label>
+            <label class="btn file-btn">Fotos oder PDF auswählen<input type="file" accept="image/*,application/pdf,.pdf" multiple data-import-files ${ui.importBusy ? 'disabled' : ''}></label>
           </div>
-          ${o ? `<div class="ocr-box">
-            ${o.preview ? `<img src="${o.preview}" alt="Ausgewähltes Foto">` : ''}
-            <div class="ocr-status">
-              <p>${esc(o.status)}${o.error ? '' : ` <span class="tnum">${Math.round(o.progress * 100)} %</span>`}</p>
-              ${o.error ? `<p class="error">${esc(o.error)}</p>` : `<div class="progress"><span style="width:${Math.round(o.progress * 100)}%"></span></div>`}
-            </div>
-          </div>` : ''}
+          ${ui.importStatus ? `<p class="muted small">${esc(ui.importStatus)} …</p>` : ''}
+          ${ui.imports.length ? `
+            <ul class="import-list">
+              ${ui.imports.map(it => `
+                <li class="${it.status}">
+                  ${it.thumb ? `<img src="${it.thumb}" alt="">` : `<span class="doc-icon">${it.kind}</span>`}
+                  <div class="imp-text">
+                    <p class="imp-name">${esc(it.name)}</p>
+                    ${it.status === 'run' ? `<div class="progress"><span style="width:${Math.round(it.progress * 100)}%"></span></div><p class="muted small">${esc(it.note || 'Wird gelesen')}</p>` : ''}
+                    ${it.status === 'wait' ? '<p class="muted small">Wartet …</p>' : ''}
+                    ${it.status === 'done' ? `<p class="small ok-text">✓ Gelesen${it.note ? ' · ' + esc(it.note) : ''}</p>` : ''}
+                    ${it.status === 'error' ? `<p class="small error">${esc(it.note || 'Fehler')}</p>` : ''}
+                  </div>
+                </li>`).join('')}
+            </ul>
+            <div class="import-sum">
+              <p><strong>${plural(done.length, 'Datei', 'Dateien')} eingelesen</strong> <span class="muted">· ${ui.draftText.length.toLocaleString('de-DE')} Zeichen Text</span></p>
+              <div class="row wrap">
+                <button class="btn primary" data-act="tab" data-tab="text" ${ui.importBusy || !ui.draftText.trim() ? 'disabled' : ''}>Weiter: Text prüfen</button>
+                <button class="btn ghost" data-act="clearImports" ${ui.importBusy ? 'disabled' : ''}>Neu anfangen</button>
+              </div>
+            </div>` : ''}
+          <details class="rules"><summary>GoodNotes-Notizen einlesen</summary>
+            <ol class="howto">
+              <li>In GoodNotes das Notizbuch öffnen, auf <strong>Teilen</strong> tippen, dann <strong>Exportieren</strong> und als Format <strong>PDF</strong> wählen. Danach <strong>In Dateien sichern</strong>.</li>
+              <li>Hier auf <strong>„Fotos oder PDF auswählen“</strong> tippen und die PDF wählen.</li>
+            </ol>
+            <p class="small">Getippter Text wird direkt und fehlerfrei ausgelesen. <strong>Handschrift</strong> wird mit der Texterkennung gelesen, das klappt nur bei sehr ordentlicher Schrift.</p>
+            <p class="small"><strong>Tipp für Handschrift:</strong> In GoodNotes die Schrift mit dem <strong>Lasso</strong> markieren, die Auswahl antippen und <strong>Konvertieren</strong> wählen. Den Text kopieren und hier im Reiter <strong>„Text“</strong> einfügen. GoodNotes erkennt Handschrift viel besser.</p>
+            <p class="muted small">GoodNotes-Dateien (.goodnotes) selbst kann die App nicht öffnen, weil das ein geschlossenes Format ist. Der Weg über PDF klappt immer.</p>
+          </details>
           <ul class="tips">
             <li>Gerade von oben fotografieren, gutes Licht, kein Schatten.</li>
             <li>Gedruckter Text klappt am besten. Handschrift wird oft nicht richtig erkannt.</li>
@@ -356,12 +416,13 @@
           </ul>`;
       } else if (tab === 'text') {
         body = `
+          ${ui.imports.some(i => i.status === 'done') ? `<p class="muted small">Text aus ${plural(ui.imports.filter(i => i.status === 'done').length, 'Datei', 'Dateien')}. Prüfe ihn kurz und korrigiere Lesefehler.</p>` : ''}
           <label for="srcText">Lerntext</label>
           <textarea id="srcText" rows="12" data-draft placeholder="Text hier einfügen oder eintippen …">${esc(ui.draftText)}</textarea>
           ${settingsDetails()}
           <div class="row wrap">
             <button class="btn primary" data-act="generate">Karten erzeugen</button>
-            <button class="btn ghost" data-act="sampleText">Beispieltext einfügen</button>
+            ${ui.draftText.trim() ? '<button class="btn ghost" data-act="clearImports">Text leeren</button>' : '<button class="btn ghost" data-act="sampleText">Beispieltext einfügen</button>'}
           </div>
           <details class="rules"><summary>Welche Muster erkennt die App?</summary>
             <table>
@@ -582,6 +643,35 @@
           </article>`).join('')}`;
     },
 
+    // Druckansicht: Karten wie echte Karteikarten zum Ausschneiden (oder als PDF speichern).
+    print() {
+      const decks = exportDecksList();
+      return `
+        <div class="no-print stack">
+          <header class="top with-back">
+            <button class="back" data-act="go" data-view="data">‹ Zurück</button>
+            <h1>Drucken</h1>
+          </header>
+          <p class="muted small">Tippe auf „Drucken“. Im Druckfenster kannst du auch „Als PDF sichern“ wählen (iPad: im Druckfenster auf Teilen tippen).</p>
+          <button class="btn primary" data-act="doPrint">Drucken</button>
+        </div>
+        ${decks.map(d => `
+          <section class="print-deck">
+            <h2 class="print-title">${esc(d.name)}${d.subject ? ` <span class="muted">· ${esc(d.subject)}</span>` : ''}</h2>
+            <div class="print-grid">
+              ${d.cards.map(c => c.type === 'summary' ? `
+                <article class="print-card">
+                  <h3>${esc(c.front)}</h3>
+                  <ul class="points">${pointsOf(c).map(p => `<li>${esc(p)}</li>`).join('')}</ul>
+                </article>` : `
+                <article class="print-card qa">
+                  <p class="q">${cardFrontHtml(c)}</p>
+                  <p class="a">${esc(c.back)}</p>
+                </article>`).join('')}
+            </div>
+          </section>`).join('')}`;
+    },
+
     settings() {
       return `
         <header class="top with-back">
@@ -659,9 +749,21 @@
           <div class="row wrap">
             <button class="btn primary" data-act="exportAll">Alle Stapel exportieren</button>
           </div>
-          ${ui.exportText ? `
-            <textarea id="exportBox" rows="6" readonly class="mono">${esc(ui.exportText)}</textarea>
-            <div class="row wrap"><button class="btn" data-act="copyExport">Text kopieren</button><button class="btn" data-act="downloadExport">Als Datei speichern</button></div>` : ''}
+          ${ui.exportOpen ? `
+            <p class="small"><strong>${esc(exportDecksList().map(d => d.name).join(', ') || 'Keine Stapel')}</strong></p>
+            <div class="seg two" role="tablist">
+              <button role="tab" aria-selected="${ui.exportFormat === 'text'}" data-act="exportFormat" data-format="text">Lesbarer Text</button>
+              <button role="tab" aria-selected="${ui.exportFormat === 'json'}" data-act="exportFormat" data-format="json">Sicherung (Import)</button>
+            </div>
+            <p class="muted small">${ui.exportFormat === 'text'
+              ? 'Zum Lesen, Weiterschicken oder in Notizen einfügen. Kann nicht wieder importiert werden.'
+              : 'Zum Sichern oder an Mitschüler schicken. Die Datei kann in der Lernkiste wieder importiert werden.'}</p>
+            <textarea id="exportBox" rows="10" readonly class="mono">${esc(exportContent())}</textarea>
+            <div class="row wrap">
+              <button class="btn" data-act="copyExport">Text kopieren</button>
+              <button class="btn" data-act="downloadExport">Als Datei speichern</button>
+              <button class="btn" data-act="go" data-view="print">Drucken / PDF</button>
+            </div>` : ''}
         </section>
         <section class="stack">
           <h2>Importieren</h2>
@@ -766,31 +868,133 @@ ${text.trim() || '(hier deinen Lerntext einfügen)'}
     render();
   }
 
-  async function runOcr(file) {
-    ui.ocr = { progress: 0, status: 'Bild wird geladen', preview: '', error: '' };
-    try {
-      const canvas = await OCR.prepareImage(file);
-      ui.ocr.preview = canvas.toDataURL('image/jpeg', 0.5);
-    } catch (e) { /* Vorschau ist nicht wichtig */ }
-    render();
+  // Kleines Vorschaubild für die Liste
+  function thumb(canvas) {
+    const t = document.createElement('canvas');
+    const k = 120 / Math.max(canvas.width, canvas.height);
+    t.width = Math.round(canvas.width * k);
+    t.height = Math.round(canvas.height * k);
+    t.getContext('2d').drawImage(canvas, 0, 0, t.width, t.height);
+    return t.toDataURL('image/jpeg', 0.6);
+  }
+
+  // Liest mehrere Fotos und PDFs nacheinander. Der Text wird an den bisherigen Text angehängt.
+  async function runImport(files) {
+    if (!files.length) return;
+    if (ui.importBusy) return toast('Bitte warten, bis alles gelesen ist.');
+    ui.importBusy = true;
+    const items = files.map(f => ({ name: f.name || 'Foto', kind: PdfReader.isPdf(f) ? 'PDF' : 'Foto', status: 'wait', progress: 0, note: '', thumb: '' }));
+    ui.imports.push(...items);
+
     let lastPaint = 0;
+    const paint = (force = false) => {
+      const now = Date.now();
+      if ((force || now - lastPaint > 150) && ui.view === 'create' && ui.createTab === 'photo') { lastPaint = now; render(); }
+    };
+    paint(true);
+
+    // Die Texterkennung wird erst gestartet, wenn sie gebraucht wird, und dann für alle Seiten benutzt.
+    let engine = null;
+    const getEngine = async () => {
+      if (!engine) engine = await OCR.start((status) => { ui.importStatus = status; paint(); });
+      ui.importStatus = '';
+      return engine;
+    };
+
+    const texts = [];
     try {
-      const text = await OCR.recognize(file, (p, status) => {
-        ui.ocr.progress = p;
-        ui.ocr.status = status;
-        const now = Date.now();
-        if (now - lastPaint > 150 && ui.view === 'create' && ui.createTab === 'photo') { lastPaint = now; render(); }
-      });
-      ui.ocr = null;
-      ui.draftText = text.trim();
-      if (!ui.draftText) return go('create', { createTab: 'photo', ocr: { progress: 0, status: 'Fertig', error: 'Auf dem Foto wurde kein Text gefunden.' } });
-      toast('Text erkannt. Prüfe ihn kurz und tippe auf „Karten erzeugen“.');
-      go('create', { createTab: 'text' });
-    } catch (e) {
-      ui.ocr.status = 'Fehler';
-      ui.ocr.error = e.message + ' Du kannst den Text auch im Reiter „Text“ einfügen.';
-      render();
+      for (let k = 0; k < files.length; k++) {
+        const file = files[k];
+        const it = items[k];
+        it.status = 'run';
+        paint(true);
+        try {
+          let text = '';
+          if (it.kind === 'PDF') {
+            const pdf = await PdfReader.open(file);
+            const pages = [];
+            let ocrPages = 0;
+            for (let n = 1; n <= pdf.numPages; n++) {
+              it.note = `Seite ${n} von ${pdf.numPages}`;
+              it.progress = (n - 1) / pdf.numPages;
+              paint();
+              const page = await pdf.getPage(n);
+              let pageText = await PdfReader.pageText(page);
+              if (!PdfReader.hasRealText(pageText)) {
+                // Keine echte Schrift auf der Seite (Scan oder Handschrift) -> Texterkennung
+                const canvas = await PdfReader.renderPage(page);
+                if (!it.thumb) it.thumb = thumb(canvas);
+                const ocr = await getEngine();
+                pageText = await ocr.read(OCR.enhance(canvas, canvas.width, canvas.height), (p) => {
+                  it.progress = (n - 1 + p) / pdf.numPages;
+                  paint();
+                });
+                ocrPages++;
+              }
+              pages.push(pageText.trim());
+            }
+            text = pages.filter(Boolean).join('\n\n');
+            it.note = plural(pdf.numPages, 'Seite', 'Seiten') + (ocrPages
+              ? (ocrPages === pdf.numPages ? ' · per Texterkennung' : ` · ${ocrPages} per Texterkennung`)
+              : ' · Text direkt ausgelesen');
+          } else {
+            const canvas = await OCR.prepareImage(file);
+            it.thumb = thumb(canvas);
+            paint(true);
+            const ocr = await getEngine();
+            text = await ocr.read(canvas, (p) => { it.progress = p; paint(); });
+            it.note = '';
+          }
+          text = text.trim();
+          texts.push(text);
+          it.progress = 1;
+          it.status = text ? 'done' : 'error';
+          if (!text) it.note = 'Kein Text gefunden';
+        } catch (e) {
+          it.status = 'error';
+          it.note = e.message || 'Fehler beim Lesen';
+        }
+        // Text sofort anhängen, damit nichts verloren geht, falls später etwas schiefgeht.
+        if (texts[texts.length - 1] && it.status === 'done') {
+          ui.draftText = (ui.draftText.trim() ? ui.draftText.trimEnd() + '\n\n' : '') + texts[texts.length - 1];
+        }
+        paint(true);
+      }
+    } finally {
+      if (engine) { try { await engine.close(); } catch (e) { /* egal */ } }
+      ui.importBusy = false;
+      ui.importStatus = '';
     }
+    const ok = items.filter(i => i.status === 'done').length;
+    if (ok) toast(`${plural(ok, 'Datei', 'Dateien')} gelesen. Du kannst weitere hinzufügen oder auf „Weiter“ tippen.`);
+    render();
+  }
+
+  // Leiste für ausgewählte Karten: verschieben, Lernfach ändern, löschen.
+  function selectBar(d) {
+    const n = ui.selected.size;
+    const others = state.decks.filter(x => x.id !== d.id);
+    const target = ui.moveTarget && (ui.moveTarget === 'new' || deckById(ui.moveTarget)) && ui.moveTarget !== d.id
+      ? ui.moveTarget : (others[0] ? others[0].id : 'new');
+    return `<div class="select-bar">
+      <p><strong>${plural(n, 'Karte', 'Karten')} ausgewählt</strong></p>
+      <div class="sb-row">
+        <label for="moveTarget" class="small">In Stapel verschieben</label>
+        <div class="row">
+          <select id="moveTarget" data-movetarget>
+            ${others.map(o => `<option value="${o.id}" ${o.id === target ? 'selected' : ''}>${esc(o.name)}</option>`).join('')}
+            <option value="new" ${target === 'new' ? 'selected' : ''}>Neuer Stapel …</option>
+          </select>
+          <button class="btn small primary" data-act="moveSelected" data-target="${target}" ${n ? '' : 'disabled'}>Verschieben</button>
+        </div>
+        ${target === 'new' ? `<input id="moveNewName" data-movename placeholder="Name des neuen Stapels" value="${esc(ui.moveNewName)}">` : ''}
+      </div>
+      <div class="sb-row">
+        <span class="small">In Lernfach legen</span>
+        <div class="box-pick">${[1, 2, 3, 4, 5].map(b => `<button class="badge b${b}" data-act="setBox" data-box="${b}" ${n ? '' : 'disabled'} aria-label="Fach ${b}">${b}</button>`).join('')}</div>
+      </div>
+      <button class="btn small ghost danger-text" data-act="deleteSelected" ${n ? '' : 'disabled'}>Ausgewählte löschen</button>
+    </div>`;
   }
 
   function showPreview(cards, target, keepScroll = false) {
@@ -839,7 +1043,74 @@ ${text.trim() || '(hier deinen Lerntext einfügen)'}
   const actions = {
     go: (ds) => go(ds.view, ds.target ? { previewTarget: ds.target } : {}),
     tab: (ds) => go('create', { createTab: ds.tab }),
-    openDeck: (ds) => go('deck', { deckId: ds.id || ui.deckId }),
+    openDeck: (ds) => go('deck', { deckId: ds.id || ui.deckId, selecting: false, selected: new Set() }),
+    startSelect() {
+      ui.selecting = true;
+      ui.selected = new Set();
+      render();
+    },
+    endSelect() {
+      ui.selecting = false;
+      ui.selected = new Set();
+      render();
+    },
+    toggleSelect(ds) {
+      ui.selected.has(ds.id) ? ui.selected.delete(ds.id) : ui.selected.add(ds.id);
+      render();
+    },
+    selectAll() {
+      const d = deckById(ui.deckId);
+      ui.selected = ui.selected.size === d.cards.length ? new Set() : new Set(d.cards.map(c => c.id));
+      render();
+    },
+    moveSelected(ds) {
+      const from = deckById(ui.deckId);
+      let to;
+      if (ds.target === 'new') {
+        to = { id: Storage.uid(), name: ui.moveNewName.trim() || 'Neuer Stapel', subject: from.subject, color: from.color, cards: [] };
+        state.decks.push(to);
+      } else {
+        to = deckById(ds.target);
+      }
+      if (!to) return;
+      const moving = from.cards.filter(c => ui.selected.has(c.id));
+      from.cards = from.cards.filter(c => !ui.selected.has(c.id));
+      to.cards.push(...moving);
+      persist();
+      ui.selected = new Set();
+      ui.selecting = false;
+      ui.moveNewName = '';
+      toast(`${plural(moving.length, 'Karte', 'Karten')} nach „${to.name}“ verschoben.`);
+      render();
+    },
+    setBox(ds) {
+      const b = Number(ds.box);
+      const d = deckById(ui.deckId);
+      d.cards.filter(c => ui.selected.has(c.id)).forEach(c => {
+        c.box = b;
+        // Fach 1 = sofort wieder lernen, sonst nach dem Abstand des Fachs
+        c.due = b === 1 ? SRS.today() : SRS.addDays(SRS.INTERVALS[b]);
+      });
+      persist();
+      toast(`${plural(ui.selected.size, 'Karte', 'Karten')} in Fach ${b} gelegt.`);
+      render();
+    },
+    async deleteSelected() {
+      const n = ui.selected.size;
+      if (!(await ask(`${plural(n, 'Karte', 'Karten')} löschen?`))) return;
+      const d = deckById(ui.deckId);
+      d.cards = d.cards.filter(c => !ui.selected.has(c.id));
+      persist();
+      ui.selected = new Set();
+      ui.selecting = false;
+      render();
+    },
+    async clearImports() {
+      if (ui.draftText.trim() && !(await ask('Den eingelesenen Text verwerfen und neu anfangen?', 'Verwerfen'))) return;
+      ui.imports = [];
+      ui.draftText = '';
+      render();
+    },
     newDeck: () => go('deckForm', { deckId: null }),
     editDeck: () => go('deckForm'),
     newCard: () => go('cardForm', { cardId: null }),
@@ -859,19 +1130,26 @@ ${text.trim() || '(hier deinen Lerntext einfügen)'}
       go('home');
     },
     exportDeck() {
-      ui.exportText = Storage.exportDecks([deckById(ui.deckId)]);
-      go('data');
+      go('data', { exportIds: [ui.deckId], exportOpen: true });
     },
     exportAll() {
-      ui.exportText = Storage.exportDecks(state.decks);
+      ui.exportIds = null;
+      ui.exportOpen = true;
       render();
     },
-    copyExport: () => copyText(ui.exportText, 'exportBox'),
+    exportFormat(ds) {
+      ui.exportFormat = ds.format;
+      render();
+    },
+    copyExport: () => copyText(exportContent(), 'exportBox'),
     downloadExport() {
-      const blob = new Blob([ui.exportText], { type: 'application/json' });
+      const isText = ui.exportFormat === 'text';
+      const blob = new Blob([exportContent()], { type: isText ? 'text/plain;charset=utf-8' : 'application/json' });
+      const decks = exportDecksList();
+      const name = (decks.length === 1 ? decks[0].name : 'lernkiste').replace(/[^\wäöüÄÖÜß -]+/g, '').trim().replace(/\s+/g, '-') || 'lernkiste';
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      a.download = `lernkiste-${SRS.today()}.json`;
+      a.download = `${name}-${SRS.today()}.${isText ? 'txt' : 'json'}`;
       document.body.appendChild(a);
       a.click();
       setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
@@ -879,11 +1157,14 @@ ${text.trim() || '(hier deinen Lerntext einfügen)'}
     importText: () => importDecks(document.getElementById('importBox').value),
     async resetAll() {
       if (!(await ask('Wirklich alle Stapel und den Lernverlauf löschen? Das kann man nicht rückgängig machen.', 'Alles löschen'))) return;
-      state = { decks: [], history: {} };
+      state = { decks: [], history: {}, settings: state.settings, exampleV2: true };
       persist();
       go('home');
     },
     readDeck: () => go('read'),
+    doPrint() {
+      try { window.print(); } catch (e) { /* nicht überall erlaubt */ }
+    },
     reveal: () => reveal(false),
     revealAll: () => reveal(true),
     learnAll: () => startSession(state.decks),
@@ -945,6 +1226,7 @@ ${text.trim() || '(hier deinen Lerntext einfügen)'}
       persist();
       ui.preview = [];
       ui.draftText = '';
+      ui.imports = [];
       ui.aiAnswer = '';
       ui.previewNewName = '';
       toast(`${plural(keep.length, 'Karte', 'Karten')} gespeichert.`);
@@ -973,6 +1255,8 @@ ${text.trim() || '(hier deinen Lerntext einfügen)'}
       if (p) p.value = aiPrompt(ui.draftText);
     } else if (t.matches('[data-ai]')) {
       ui.aiAnswer = t.value;
+    } else if (t.matches('[data-movename]')) {
+      ui.moveNewName = t.value;
     } else if (t.matches('[data-pvname]')) {
       ui.previewNewName = t.value;
     } else if (t.matches('[data-pv]')) {
@@ -997,7 +1281,12 @@ ${text.trim() || '(hier deinen Lerntext einfügen)'}
       else render();
       return;
     }
-    if (t.matches('[data-ocr]') && t.files[0]) runOcr(t.files[0]);
+    if (t.matches('[data-import-files]') && t.files.length) {
+      const files = [...t.files];
+      t.value = '';
+      runImport(files);
+    }
+    if (t.matches('[data-movetarget]')) { ui.moveTarget = t.value; render(); }
     if (t.matches('[data-pvtarget]')) { ui.previewTarget = t.value; render(); }
     if (t.matches('[data-import]') && t.files[0]) {
       const reader = new FileReader();
@@ -1091,11 +1380,11 @@ ${text.trim() || '(hier deinen Lerntext einfügen)'}
     ['learnPick', 'Lernen', '<rect x="4" y="5" width="13" height="15" rx="2"/><path d="M8 5V3h12v15h-3"/>'],
     ['stats', 'Statistik', '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>'],
   ];
-  const NAV_GROUP = { home: 'home', deck: 'home', deckForm: 'home', cardForm: 'home', data: 'home', read: 'home', settings: 'home', create: 'create', preview: 'create', learnPick: 'learnPick', session: 'learnPick', quiz: 'learnPick', stats: 'stats' };
+  const NAV_GROUP = { home: 'home', deck: 'home', deckForm: 'home', cardForm: 'home', data: 'home', print: 'home', read: 'home', settings: 'home', create: 'create', preview: 'create', learnPick: 'learnPick', session: 'learnPick', quiz: 'learnPick', stats: 'stats' };
 
   function render() {
     const active = NAV_GROUP[ui.view];
-    const focusMode = ui.view === 'session' || ui.view === 'quiz';
+    const focusMode = ui.view === 'session' || ui.view === 'quiz' || ui.view === 'print';
     root.innerHTML = `
       <main class="view view-${ui.view}">${views[ui.view]()}</main>
       ${focusMode ? '' : `<nav class="tabbar" aria-label="Hauptmenü">${NAV.map(([v, label, icon]) => `
