@@ -240,6 +240,21 @@
     }).join('\n\n');
   }
 
+  function exportFileName() {
+    const decks = exportDecksList();
+    return (decks.length === 1 ? decks[0].name : 'Lernkiste').replace(/[^\wäöüÄÖÜß -]+/g, '').trim().replace(/\s+/g, '-') || 'Lernkiste';
+  }
+
+  // Datei herunterladen (landet auf dem iPad in der Dateien-App unter "Downloads").
+  function saveFile(blob, name) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+  }
+
   function exportContent() {
     const decks = exportDecksList();
     return ui.exportFormat === 'text' ? readableText(decks) : Storage.exportDecks(decks);
@@ -659,7 +674,7 @@
           <section class="print-deck">
             <h2 class="print-title">${esc(d.name)}${d.subject ? ` <span class="muted">· ${esc(d.subject)}</span>` : ''}</h2>
             <div class="print-grid">
-              ${d.cards.map(c => c.type === 'summary' ? `
+              ${[...d.cards.filter(c => c.type === 'summary'), ...d.cards.filter(c => c.type !== 'summary')].map(c => c.type === 'summary' ? `
                 <article class="print-card">
                   <h3>${esc(c.front)}</h3>
                   <ul class="points">${pointsOf(c).map(p => `<li>${esc(p)}</li>`).join('')}</ul>
@@ -760,10 +775,14 @@
               : 'Zum Sichern oder an Mitschüler schicken. Die Datei kann in der Lernkiste wieder importiert werden.'}</p>
             <textarea id="exportBox" rows="10" readonly class="mono">${esc(exportContent())}</textarea>
             <div class="row wrap">
-              <button class="btn" data-act="copyExport">Text kopieren</button>
-              <button class="btn" data-act="downloadExport">Als Datei speichern</button>
-              <button class="btn" data-act="go" data-view="print">Drucken / PDF</button>
-            </div>` : ''}
+              ${ui.exportFormat === 'text' ? `
+                <button class="btn primary" data-act="downloadPdf">Als PDF-Datei speichern</button>
+                <button class="btn" data-act="go" data-view="print">Drucken</button>
+                <button class="btn" data-act="copyExport">Text kopieren</button>` : `
+                <button class="btn primary" data-act="downloadExport">Sicherung speichern</button>
+                <button class="btn" data-act="copyExport">Text kopieren</button>`}
+            </div>
+            ${ui.exportFormat === 'text' ? '<p class="muted small">Die PDF sieht aus wie beim Drucken: Karteikarten nebeneinander, keine Karte wird zwischen zwei Seiten zerschnitten.</p>' : ''}` : ''}
         </section>
         <section class="stack">
           <h2>Importieren</h2>
@@ -1143,16 +1162,16 @@ ${text.trim() || '(hier deinen Lerntext einfügen)'}
     },
     copyExport: () => copyText(exportContent(), 'exportBox'),
     downloadExport() {
-      const isText = ui.exportFormat === 'text';
-      const blob = new Blob([exportContent()], { type: isText ? 'text/plain;charset=utf-8' : 'application/json' });
-      const decks = exportDecksList();
-      const name = (decks.length === 1 ? decks[0].name : 'lernkiste').replace(/[^\wäöüÄÖÜß -]+/g, '').trim().replace(/\s+/g, '-') || 'lernkiste';
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = `${name}-${SRS.today()}.${isText ? 'txt' : 'json'}`;
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+      const blob = new Blob([Storage.exportDecks(exportDecksList())], { type: 'application/json' });
+      saveFile(blob, `${exportFileName()}-sicherung.json`);
+    },
+    downloadPdf() {
+      try {
+        const blob = PdfExport.build(exportDecksList(), pointsOf);
+        saveFile(blob, `${exportFileName()}.pdf`);
+      } catch (e) {
+        toast('PDF konnte nicht erstellt werden: ' + e.message);
+      }
     },
     importText: () => importDecks(document.getElementById('importBox').value),
     async resetAll() {

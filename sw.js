@@ -1,15 +1,24 @@
-// sw.js – Service Worker: speichert alle Dateien der App im Browser-Cache.
-// Dadurch startet die App auch ohne Internet. Bei Änderungen VERSION erhöhen.
-const VERSION = 'lernkiste-v3';
+// sw.js – Service Worker: speichert die Dateien der App im Browser, damit sie auch offline startet.
+// Bei Änderungen VERSION erhöhen.
+//
+// Strategie:
+//  - App-Dateien (HTML, CSS, JS): ZUERST aus dem Internet holen (immer die neueste Version),
+//    nur ohne Internet die gespeicherte Kopie nehmen.
+//  - Große Bibliotheken (Texterkennung, PDF-Leser): aus dem Speicher, weil sie sich nie ändern.
+const VERSION = 'lernkiste-v5';
 const FILES = [
   './', 'index.html', 'manifest.json', 'style.css',
-  'storage.js', 'srs.js', 'generator.js', 'ocr.js', 'pdfreader.js', 'quiz.js', 'app.js',
+  'storage.js', 'srs.js', 'generator.js', 'ocr.js', 'pdfreader.js', 'pdfexport.js', 'quiz.js', 'app.js',
   'icon.svg', 'icon-192.png', 'icon-512.png',
-  'tesseract.min.js', 'worker.min.js', 'pdf.min.js',
+  'tesseract.min.js', 'worker.min.js', 'pdf.min.js', 'jspdf.umd.min.js',
 ];
+const BIG = /(jspdf|tesseract|worker\.min|pdf\.min|traineddata|wasm)/;
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));
+  // cache: 'reload' = am Browser-Zwischenspeicher vorbei direkt vom Server laden
+  e.waitUntil(caches.open(VERSION)
+    .then((c) => c.addAll(FILES.map((f) => new Request(f, { cache: 'reload' }))))
+    .then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {
@@ -18,15 +27,30 @@ self.addEventListener('activate', (e) => {
     .then(() => self.clients.claim()));
 });
 
-// Erst im Cache nachschauen, sonst aus dem Internet laden und für später speichern
-// (so landen auch die großen Texterkennungs-Dateien nach der ersten Nutzung im Cache).
+function save(request, response) {
+  if (response.ok) {
+    const copy = response.clone();
+    caches.open(VERSION).then((c) => c.put(request, copy));
+  }
+  return response;
+}
+
 self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;
+  const url = new URL(e.request.url);
+  const sameOrigin = url.origin === location.origin;
+
+  if (sameOrigin && !BIG.test(url.pathname)) {
+    // Internet zuerst, Speicher als Ersatz
+    e.respondWith(
+      fetch(e.request.url, { cache: 'no-cache' })
+        .then((res) => save(e.request, res))
+        .catch(() => caches.match(e.request).then((hit) => hit || caches.match('./')))
+    );
+    return;
+  }
+  // Speicher zuerst (große Bibliotheken, Schriften)
   e.respondWith(caches.match(e.request).then((hit) => hit || fetch(e.request).then((res) => {
-    if (res.ok && (new URL(e.request.url).origin === location.origin || e.request.url.includes('fonts.g'))) {
-      const copy = res.clone();
-      caches.open(VERSION).then((c) => c.put(e.request, copy));
-    }
-    return res;
+    return (sameOrigin || url.hostname.includes('fonts.g')) ? save(e.request, res) : res;
   })));
 });

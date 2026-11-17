@@ -380,8 +380,18 @@ input[type="range"] { width: 100%; accent-color: var(--accent); height: 28px; }
   body { background: #fff; color: #000; }
   .no-print, .tabbar, .toast { display: none !important; }
   .view { max-width: none; padding: 0; gap: 10px; }
-  .print-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
-  .print-card { box-shadow: none; border: 1px solid #555; border-radius: 4px; font-size: 11pt; }
+  /* Im Druck kein Grid: Safari zerschneidet Grid-Elemente an Seitenrändern.
+     inline-block-Karten werden nie geteilt, sondern rutschen komplett auf die nächste Seite. */
+  .print-grid { display: block; font-size: 0; }
+  .print-card {
+    display: inline-block; vertical-align: top; width: calc(50% - 5px); margin: 0 0 10px; font-size: 11pt;
+    box-shadow: none; border: 1px solid #555; border-radius: 4px;
+    break-inside: avoid; page-break-inside: avoid; -webkit-column-break-inside: avoid;
+  }
+  .print-card:nth-child(odd) { margin-right: 10px; }
+  .print-card .points { display: block; }
+  .print-card .points li { margin-bottom: 3px; }
+  .print-title { break-after: avoid; page-break-after: avoid; }
   .print-deck + .print-deck { break-before: page; }
 }
 
