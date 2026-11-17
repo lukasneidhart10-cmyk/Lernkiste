@@ -5,10 +5,10 @@
 //  - App-Dateien (HTML, CSS, JS): ZUERST aus dem Internet holen (immer die neueste Version),
 //    nur ohne Internet die gespeicherte Kopie nehmen.
 //  - Große Bibliotheken (Texterkennung, PDF-Leser): aus dem Speicher, weil sie sich nie ändern.
-const VERSION = 'lernkiste-v5';
+const VERSION = 'lernkiste-v6';
 const FILES = [
   './', 'index.html', 'manifest.json', 'style.css',
-  'storage.js', 'srs.js', 'generator.js', 'ocr.js', 'pdfreader.js', 'pdfexport.js', 'quiz.js', 'app.js',
+  'storage.js', 'srs.js', 'generator.js', 'ocr.js', 'pdfreader.js', 'pdfexport.js', 'ai.js', 'quiz.js', 'app.js',
   'icon.svg', 'icon-192.png', 'icon-512.png',
   'tesseract.min.js', 'worker.min.js', 'pdf.min.js', 'jspdf.umd.min.js',
 ];
@@ -51,6 +51,8 @@ self.addEventListener('fetch', (e) => {
   }
   // Speicher zuerst (große Bibliotheken, Schriften)
   e.respondWith(caches.match(e.request).then((hit) => hit || fetch(e.request).then((res) => {
-    return (sameOrigin || url.hostname.includes('fonts.g')) ? save(e.request, res) : res;
+    // Schriften und der KI-Baustein (WebLLM vom CDN) werden für offline gespeichert.
+    // Das KI-Modell selbst speichert WebLLM in einem eigenen Speicher.
+    return (sameOrigin || url.hostname.includes('fonts.g') || url.pathname.includes('@mlc-ai/web-llm')) ? save(e.request, res) : res;
   })));
 });

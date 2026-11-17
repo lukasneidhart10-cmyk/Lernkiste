@@ -22,8 +22,25 @@ const Generator = (() => {
 
   // Begriffe dürfen höchstens 5 Wörter und 40 Zeichen lang sein, sonst ist es wohl kein Begriff.
   function isYear(text) {
-    return /^\d{3,4}$/.test(text.trim());
+    return /^\d{3,4}$/.test(text.trim()) || isDate(text);
   }
+
+  // "Um 300 n. Chr.", "August 1959", "1914" -> Zeitangabe
+  function isDate(text) {
+    return /\b\d{3,4}\b/.test(text) && text.trim().split(/\s+/).length <= 5
+      && /^(?:Um|Ab|Seit|Bis|Im Jahr|ca\.|Ca\.|\d|Januar|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember)/.test(text.trim());
+  }
+
+  // Frage zu einer Zeitangabe: "1914" -> "Was geschah 1914?", "August 1959" -> "Was geschah im August 1959?"
+  function dateQuestion(text) {
+    let t = text.trim();
+    if (/^(Um|Ab|Seit|Bis|Im)\b/.test(t)) t = t[0].toLowerCase() + t.slice(1);
+    else if (/^[A-ZÄÖÜ]/.test(t)) t = 'im ' + t;
+    return `Was geschah ${t}?`;
+  }
+
+  // Wörter, die vor einem Doppelpunkt stehen können, aber kein Begriff sind ("Tipp: …", "Danach: …").
+  const NOT_TERMS = new Set('tipp merke hinweis achtung danach dann beispiel wichtig also außerdem zusammenfassung info'.split(' '));
 
   function isTerm(text) {
     const t = text.trim();
@@ -38,11 +55,85 @@ const Generator = (() => {
   // Text vorbereiten: Leerzeichen vereinheitlichen und Silbentrennung am Zeilenende reparieren
   // ("Zell-\nkern" -> "Zellkern"). Das passiert bei Fotos von Buchseiten oft.
   function prepare(text) {
-    return String(text || '')
+    const lines = fixOcr(String(text || ''))
       .replace(/\r/g, '')
       .replace(/([a-zäöüß])-[ \t]*\n[ \t]*([a-zäöüß])/g, '$1$2')
       .split('\n')
       .map(l => l.replace(/[ \t]+/g, ' ').trim());
+    return convertTables(lines);
+  }
+
+  // Typische Lesefehler der Texterkennung korrigieren.
+  function fixOcr(text) {
+    return text
+      .replace(/\bY%|\bY2\b/g, '½')                              // "Achtelnote Y% Schlag" -> "½ Schlag"
+      .replace(/([A-ZÄÖÜ][a-zäöüß]+) \|\./g, '$1 I.')              // "Kamehameha |." -> "Kamehameha I."
+      .replace(/^[»«›]\s+/gm, '• ');                               // falsch gelesene Aufzählungszeichen
+  }
+
+  // ---------- Tabellen ----------
+  // Eine Tabelle erkennt man an ihrer Kopfzeile mit typischen Spaltennamen ("Begriff Bedeutung",
+  // "Position Ton", "Zeit / Jahr Ereignis"). Jede Tabellenzeile wird zu "Spalte 1: Spalte 2",
+  // die Kopfzeile selbst fällt weg. Aus "Aloha Wertschätzung" wird so "Aloha: Wertschätzung".
+  const HEADER_WORDS = new Set(('begriff bedeutung erklärung definition position ton töne note notenwert dauer ' +
+    'dreiklang zeit jahr jahreszahl datum ereignis ereignisse bereich beschreibung merkmal merkmale eigenschaft ' +
+    'beispiel beispiele name person ort formel einheit größe wert symbol zeichen wort übersetzung deutsch englisch ' +
+    'französisch latein vokabel funktion aufgabe art arten typ vorteil vorteile nachteil nachteile ursache folge folgen').split(' '));
+
+  function isTableHeader(line) {
+    if (!line || BULLET.test(line) || /[.!?:,;=]/.test(line)) return false;
+    const tokens = line.split(/[\s/|]+/).filter(Boolean);
+    if (tokens.length < 2 || tokens.length > 4) return false;
+    return tokens.filter(t => HEADER_WORDS.has(t.toLowerCase())).length >= 2;
+  }
+
+  const MONTHS = 'Januar|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember';
+  const DATE_START = new RegExp(`^((?:(?:Um|Ab|Seit|Bis|Im Jahr|ca\\.|Ca\\.)\\s+)?(?:\\d{1,2}\\.\\s*)?(?:(?:${MONTHS})\\s+)?\\d{3,4}(?:er)?(?:\\s*(?:n|v)\\.\\s*Chr\\.)?)\\s+(.+)$`);
+
+  // Eine Tabellenzeile in "links: rechts" teilen.
+  function splitRow(line) {
+    let m;
+    if ((m = line.match(DATE_START))) return `${m[1]}: ${m[2]}`;               // "1778 James Cook …" -> "1778: James Cook …"
+    const tokens = line.split(' ');
+    if (tokens.length < 2) return line;
+    const num = tokens.findIndex((t, i) => i > 0 && /^[\d½¼¾]/.test(t));        // "Ganze Note 4 Schläge"
+    if (num > 0) return `${tokens.slice(0, num).join(' ')}: ${tokens.slice(num).join(' ')}`;
+    const last = tokens[tokens.length - 1];
+    if (last.length <= 3) return `${tokens.slice(0, -1).join(' ')}: ${last}`;   // "Linie (unten) E"
+    return `${tokens[0]}: ${tokens.slice(1).join(' ')}`;                         // "Aloha Wertschätzung"
+  }
+
+  function isRowLine(line) {
+    if (!line || BULLET.test(line) || /:$/.test(line) || /:\s/.test(line) || isTableHeader(line)) return false;
+    if (line.split(/\s+/).length > 14 || /^(Tipp|Merke|Merksatz|Hinweis|Beispiel|Achtung)\b/i.test(line)) return false;
+    if (DATE_START.test(line)) return true;
+    // Eine Tabellenzeile hat mindestens zwei Teile, und der zweite beginnt groß, mit Zahl oder Klammer
+    // ("Aloha Wertschätzung", "Ganze Note 4 Schläge"). "Grundton notieren" ist dagegen ein normaler Satz.
+    const tokens = line.split(' ');
+    return tokens.length >= 2 && /^[A-ZÄÖÜ0-9½¼¾(]/.test(tokens[1]);
+  }
+
+  function convertTables(lines) {
+    const out = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (!isTableHeader(lines[i])) { out.push(lines[i]); continue; }
+      // Zeilen sammeln, solange sie wie Tabellenzeilen aussehen.
+      const rows = [];
+      let j = i + 1;
+      while (j < lines.length && isRowLine(lines[j])) {
+        // Steht danach eine neue Tabellenkopfzeile, ist diese Zeile die Überschrift der nächsten Tabelle.
+        if (isTableHeader(lines[j + 1])) break;
+        rows.push(lines[j]);
+        j++;
+      }
+      if (rows.length >= 2) {
+        rows.forEach(r => out.push('• ' + splitRow(r)));
+        i = j - 1;
+      } else {
+        out.push(lines[i]);
+      }
+    }
+    return out;
   }
 
   // Regel 1: Eine Zeile, die mit ":" endet, und darunter mindestens 2 Aufzählungspunkte.
@@ -74,7 +165,8 @@ const Generator = (() => {
       const m = clean.match(regex);
       if (m && isTerm(m[1]) && m[2].trim().length >= 3) {
         // Jahreszahlen ("1914: Kriegsbeginn") werden zur Frage "Was geschah 1914?"
-        const front = isYear(m[1]) ? `Was geschah ${m[1].trim()}?` : m[1];
+        if (NOT_TERMS.has(m[1].trim().toLowerCase())) return;
+        const front = isYear(m[1]) ? dateQuestion(m[1]) : m[1];
         cards.push(makeCard(front, m[2], 'basic', ruleName));
         used.add(i);
       }

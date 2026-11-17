@@ -8,5 +8,6 @@ Stichwortkarten und Lernkarten erzeugen und mit dem Leitner-System lernen.
 - Karten werden per Regeln erzeugt (`generator.js`), gelernt wird mit dem Leitner-System (`srs.js`)
 - Daten bleiben auf dem Gerät (localStorage)
 - Installierbar als App (PWA) und offline nutzbar
+- Optionale KI-Hilfe direkt auf dem Gerät mit [WebLLM](https://webllm.mlc.ai) (Apache-2.0), wird bei Bedarf vom CDN geladen
 
 Entstanden als GFS-Projekt zum Thema Vibe Coding.

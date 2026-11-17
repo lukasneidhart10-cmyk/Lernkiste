@@ -14,13 +14,15 @@
     lists: true,           // Lernkarten: Aufzählungen ("Nenne: ...")
     cloze: true,           // Lernkarten: Lückentexte
     summaryLearn: 'read',  // Stichwortkarten beim Lernen: 'read' | 'step' | 'flip'
+    ai: false,             // KI auf dem Gerät benutzen (ai.js)
+    aiModel: 'standard',   // 'standard' (Gemma 2) | 'light' (Qwen 2.5, für ältere Geräte)
   };
 
   let state = Storage.load() || seed();
   state.history = state.history || {};
   state.settings = { ...DEFAULT_SETTINGS, ...(state.settings || {}) };
   migrateExample();
-  const ui = { view: 'home', deckId: null, cardId: null, createTab: 'photo', draftText: '', aiAnswer: '', preview: [], previewTarget: '', previewSource: 'rules', coverage: null, settingsOpen: false, ocr: null, session: null, quiz: null, exportIds: null, exportFormat: 'text', exportOpen: false, imports: [], importBusy: false, importStatus: '', selecting: false, selected: new Set(), moveTarget: '', moveNewName: '' };
+  const ui = { view: 'home', deckId: null, cardId: null, createTab: 'photo', draftText: '', aiAnswer: '', preview: [], previewTarget: '', previewSource: 'rules', coverage: null, settingsOpen: false, ocr: null, session: null, quiz: null, exportIds: null, exportFormat: 'text', exportOpen: false, aiRun: null, aiOriginal: null, aiInfo: '', imports: [], importBusy: false, importStatus: '', selecting: false, selected: new Set(), moveTarget: '', moveNewName: '' };
 
   const COLORS = ['blue', 'green', 'orange', 'pink', 'purple', 'teal'];
   const root = document.getElementById('app');
@@ -173,7 +175,17 @@
         ${toggle('definitions', 'Begriffe & Definitionen', '„Zellkern: …“, „Was ist …?“, „Was versteht man unter …?“')}
         ${toggle('lists', 'Aufzählungen', '„Nenne: Zellorganellen“')}
         ${toggle('cloze', 'Lückentexte', 'Ein wichtiges Wort im Satz wird abgedeckt')}
-      </fieldset>` : ''}`;
+      </fieldset>` : ''}
+      <fieldset class="setting"><legend>KI-Hilfe (Beta)</legend>
+        ${toggle('ai', 'KI auf dem Gerät benutzen', 'Räumt eingelesenen Text auf: Lesefehler, Tabellen, Überschriften')}
+        ${s.ai ? `
+          <div class="opts two">
+            ${radio('aiModel', 'standard', 'Standard', `${AI.MODELS.standard.name}, ${AI.MODELS.standard.size}`)}
+            ${radio('aiModel', 'light', 'Leicht', `${AI.MODELS.light.name}, ${AI.MODELS.light.size}, für ältere Geräte`)}
+          </div>
+          <p class="muted small">Kostenlos und ohne Anmeldung. Die KI läuft direkt auf deinem Gerät, deine Notizen werden nirgendwohin geschickt. Beim ersten Mal wird das KI-Modell einmalig heruntergeladen, am besten im WLAN.</p>
+          ${AI.supported() ? '' : '<p class="small error">Dieses Gerät oder dieser Browser unterstützt die KI leider nicht. Nötig ist iPadOS 26 (Safari) oder ein aktueller Chrome bzw. Edge.</p>'}` : ''}
+      </fieldset>`;
   }
 
   function learnControls() {
@@ -434,9 +446,16 @@
           ${ui.imports.some(i => i.status === 'done') ? `<p class="muted small">Text aus ${plural(ui.imports.filter(i => i.status === 'done').length, 'Datei', 'Dateien')}. Prüfe ihn kurz und korrigiere Lesefehler.</p>` : ''}
           <label for="srcText">Lerntext</label>
           <textarea id="srcText" rows="12" data-draft placeholder="Text hier einfügen oder eintippen …">${esc(ui.draftText)}</textarea>
+          ${ui.aiOriginal !== null && !ui.aiRun ? `<p class="muted small">${esc(ui.aiInfo)} <button class="link" data-act="aiRestore">Original wiederherstellen</button></p>` : ''}
+          ${ui.aiRun ? `<div class="import-sum">
+            <p><strong>${esc(ui.aiRun.status)}</strong></p>
+            <div class="progress"><span style="width:${Math.round(ui.aiRun.progress * 100)}%"></span></div>
+            <div class="row wrap"><button class="btn ghost small" data-act="aiStop">Abbrechen</button></div>
+          </div>` : ''}
           ${settingsDetails()}
           <div class="row wrap">
-            <button class="btn primary" data-act="generate">Karten erzeugen</button>
+            <button class="btn primary" data-act="generate" ${ui.aiRun ? 'disabled' : ''}>Karten erzeugen</button>
+            ${state.settings.ai && !ui.aiRun ? '<button class="btn" data-act="aiImprove">Mit KI verbessern</button>' : ''}
             ${ui.draftText.trim() ? '<button class="btn ghost" data-act="clearImports">Text leeren</button>' : '<button class="btn ghost" data-act="sampleText">Beispieltext einfügen</button>'}
           </div>
           <details class="rules"><summary>Welche Muster erkennt die App?</summary>
@@ -1128,6 +1147,7 @@ ${text.trim() || '(hier deinen Lerntext einfügen)'}
       if (ui.draftText.trim() && !(await ask('Den eingelesenen Text verwerfen und neu anfangen?', 'Verwerfen'))) return;
       ui.imports = [];
       ui.draftText = '';
+      ui.aiOriginal = null;
       render();
     },
     newDeck: () => go('deckForm', { deckId: null }),
@@ -1181,6 +1201,44 @@ ${text.trim() || '(hier deinen Lerntext einfügen)'}
       go('home');
     },
     readDeck: () => go('read'),
+    async aiImprove() {
+      if (!ui.draftText.trim()) return toast('Bitte zuerst Text einfügen oder ein Foto einlesen.');
+      if (!AI.supported()) return toast('Dieses Gerät unterstützt die KI nicht (nötig: iPadOS 26 oder aktueller Chrome).');
+      const key = state.settings.aiModel;
+      if (!(await AI.isDownloaded(key))
+        && !(await ask(`Beim ersten Mal wird das KI-Modell heruntergeladen (${AI.MODELS[key].size}). Am besten im WLAN. Jetzt starten?`, 'Herunterladen'))) return;
+      const original = ui.draftText;
+      ui.aiRun = { progress: 0, status: 'KI wird vorbereitet' };
+      render();
+      let last = 0;
+      try {
+        const result = await AI.cleanup(original, key, (p, status) => {
+          ui.aiRun = { progress: p, status };
+          const now = Date.now();
+          if (now - last > 250 && ui.view === 'create' && ui.createTab === 'text') { last = now; render(); }
+        });
+        ui.aiOriginal = original;
+        ui.draftText = result.text;
+        ui.aiInfo = result.kept
+          ? `Text von der KI verbessert. ${plural(result.kept, 'Abschnitt wurde', 'Abschnitte wurden')} unverändert gelassen, damit nichts verloren geht.`
+          : 'Text von der KI verbessert. Prüfe ihn kurz und tippe dann auf „Karten erzeugen“.';
+      } catch (e) {
+        toast('KI-Fehler: ' + (e.message || e));
+      } finally {
+        ui.aiRun = null;
+        render();
+      }
+    },
+    aiStop() {
+      AI.stop();
+      toast('Wird abgebrochen …');
+    },
+    aiRestore() {
+      if (ui.aiOriginal === null) return;
+      ui.draftText = ui.aiOriginal;
+      ui.aiOriginal = null;
+      render();
+    },
     doPrint() {
       try { window.print(); } catch (e) { /* nicht überall erlaubt */ }
     },
